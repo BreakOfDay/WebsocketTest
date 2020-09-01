@@ -24,6 +24,7 @@ public class WebRtcSignalingEndpoint {
 		sessions.add(session);
 	}
 	
+	// 텍스트 수신
 	@OnMessage
 	public void process(String data, Session session) throws IOException {
 		System.out.println("Got signal -" + data);

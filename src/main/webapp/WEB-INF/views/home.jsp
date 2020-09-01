@@ -1,5 +1,5 @@
 <%@ taglib uri="http://java.sun.com/jsp/jstl/core" prefix="c" %>
-<%@ page session="false" %>
+<%@ page language="java" contentType="text/html; charset=UTF-8" pageEncoding="UTF-8"%>
 <html>
 <head>
 	<title>Home</title>
@@ -33,15 +33,124 @@
 
  
 	<script>
-	var pc;
-	 
-	/* Prepare websocket for signaling server endpoint. */
+	/*
+	* Origin code 
+	* 1. https://stackoverflow.com/questions/54980799/webrtc-datachannel-with-manual-signaling-example-please?answertab=oldest#tab-top
+	*/
+	
+	/* 
+	* 2. https://github.com/webrtc/samples/blob/gh-pages/src/content/datachannel/filetransfer/js/main.js
+	*  Copyright (c) 2015 The WebRTC project authors. All Rights Reserved.
+	*
+	*  Use of this source code is governed by a BSD-style license
+	*  that can be found in the LICENSE file in the root of the source
+	*  tree.
+	*/
+	
+	/* 
+	* 3. https://itsallbinary.com/create-your-own-screen-sharing-web-application-using-java-and-javascript-webrtc/
+	*/
+	
+	/* 시그널링 서버를 위한 websocket */
 	var signalingWebsocket = new WebSocket("ws://" + window.location.host + "/websocket/signal");
-	 
-	var fname;
-	var fsize;
+	var pc;
+	var dc;
 	
 	var chat = document.querySelector('input#chat');
+	const log = function(msg) {
+		div.innerHTML += "<br>"+msg;
+	}
+	
+	signalingWebsocket.onopen = init();
+	function init() {
+	    console.log("Connected to signaling endpoint. Now initializing.");    
+	    preparePeerConnection();
+	};
+	
+	function preparePeerConnection() {
+	     // ICE(Internet Connectivity Establishment) : 두 단말이 서로 통신할 수 있는 최적의 경로를 찾을 수 있도록 도와주는 프레임워크
+	    const config = {iceServers: [{urls: "stun:stun.1.google.com:19302"}]}; // google의 공개 stun 서버 중 하나
+	    pc = new RTCPeerConnection(config); // 로컬과 원격 피어 간 연결 나타내는 새로운 객체 생성 반환
+	    dc = pc.createDataChannel("chat", { negotiated: true, id: 10 }); // 원격 유저와 연결하는 신규 채널 생성 (채널이름, 설정 옵션)
+	    pc.onnegotiationneeded = async () => { // 시그널링 서버를 통해 연결 협상중일 때
+	        console.log('onnegotiationneeded');
+	        sendOfferSignal();
+	    };
+	    pc.onicecandidate = function(event) { // 로컬 ICE 에이전트가 signaling 서버를 통해 원격 피어에게 메세지를 전달 할 필요가 있을때 마다 발생.
+	        if (event.candidate) { // candidate : 해당 네트워크 연결 정보.
+	        	sendSignal(event);
+	        }
+	    };
+	};
+
+	/* offer 보내는 함수 */
+	function sendOfferSignal() {
+	    pc.createOffer(function(offer) { // 로컬 SDP 생성 및 작성
+	        sendSignal(offer);
+	        pc.setLocalDescription(offer);
+	    }, function(error) {
+	        alert("Error creating an offer");
+	    });
+	};
+	 
+	function sendSignal(signal) {
+	    if (signalingWebsocket.readyState == 1) { // readyState == 1 : websocket 열린 상태
+	    	if(signal.candidate) { // signal에 candidate 존재 -> sdp의 candidate에 대한 정보
+	    		signalingWebsocket.send(JSON.stringify(signal.candidate));
+	    	} else { // signal에 candidate 존재x -> sdp 전체 정보
+		        signalingWebsocket.send(JSON.stringify(signal));	    		
+	    	}
+	    } 
+	};
+
+	pc.oniceconnectionstatechange = function(e) { // 연결 상태가 변경되면 변경된 상태 화면에 출력
+		log(pc.iceConnectionState);
+	} 
+	
+	// 시그널링 서버가 요청 데이터를 받았을 때
+	signalingWebsocket.onmessage = function(msg) {
+	    console.log("Got message", msg.data);
+	    
+	    var signal;
+		signal = JSON.parse(msg.data);				
+		if(signal.type) { // msg 타입이 offer나 answer일 경우
+			switch (signal.type) {
+		        case "offer":
+		            handleOffer(signal);
+		            break;
+		        case "answer":
+		            handleAnswer(signal);
+		            break;
+		        default:
+		            break;
+		    }
+		} else { // msg 타입이 candidate일 경우
+			handleCandidate(signal);
+		}
+	};
+	
+	function handleOffer(offer) {
+	    pc.setRemoteDescription(new RTCSessionDescription(offer)); // offer에게서 받은 sdp를 원격 피어의 설명으로 설정
+	 
+	    pc.createAnswer(function(answer) { // answer의 sdp 생성 및 작성
+	        pc.setLocalDescription(answer);
+	        sendSignal(answer);
+	    }, function(error) {
+	        alert("Error creating an answer");
+	    });
+	};
+	 
+	function handleAnswer(answer) {
+	    pc.setRemoteDescription(new RTCSessionDescription(answer)); // answer에게 받은 sdp를 원격 피어의 설명으로 설정
+	    console.log("connection established successfully!!");
+	};
+	
+	// 시그널링 채널을 통해 원격 유저로부터 candidate를 수신-> 브라우저의 ICE 에이전트에게 새로 수신한 candidate 전달
+	function handleCandidate(candidate) {
+		alert("handleCandidate");
+		// addIceCandidate : 원격 설명에 연결의 원격쪽 상태를 설명해주는 신규 원격 candidate 추가
+	    pc.addIceCandidate(new RTCIceCandidate(candidate));
+	};
 	
 	/* 파일전송 변수 */
 	var fileReader;
@@ -55,8 +164,11 @@
 	var receiveBuffer = [];
 	var receivedSize = 0;
 	
+	var fname;
+	var fsize;
+	
 	/* 파일 선택 및 파일 선택 */
-	fileInput.addEventListener('change', handleFileInputChange, false);
+	fileInput.addEventListener('change', handleFileInputChange, false);  // fileInput이 변경 시 handleFileInputChange 메소드 실행
 	async function handleFileInputChange() {
 		const file = fileInput.files[0];
 		
@@ -68,7 +180,7 @@
 		}
 	}
 	
-	/* Send Button Event */
+	/* 파일 전송 버튼 클릭 */
 	sendFileButton.addEventListener("click", () => createConnection());
 	async function createConnection() {
 		abortButton.disabled = false;
@@ -76,11 +188,10 @@
 		
 		/* localConnection == pc */
 		/* sendChannel == dc */
-		signalingWebsocket.binaryType = 'arraybuffer';
+		dc.binaryType = 'arraybuffer';
 		sendData();
 	}
-	
-	/* sendData() */
+
 	function sendData() {
 		const file = fileInput.files[0];
 		
@@ -88,12 +199,12 @@
 			'filesize' : file.size,
 			'filename' : file.name
 		};
-		signalingWebsocket.send(JSON.stringify(obj));
+		dc.send(JSON.stringify(obj));
 		log("<p style='margin: 5px; float: right; background: #ffe100;'>&lt;"+file.name+"&gt; "+file.size+"(bytes)</p><br>");
 		
 		statusMessage.textContent = '';
 		
-		if(file.size === 0) {
+		if(file.size === 0) { // 파일 선택 안 했을 때
 			statusMessage.textContent = 'File is empty, please select a non-empty file';
 			return;
 		}
@@ -108,10 +219,10 @@
 		fileReader.addEventListener('abort', event => console.log('File reading aborted:', event));
 		fileReader.addEventListener('load', e => {
 			console.log('FileRead.onload ', e);
-			signalingWebsocket.send(e.target.result);
-			offset += e.target.result.byteLength;
+			dc.send(e.target.result); // chunkSize 크기로 filesize를 잘라서 ArrayBuffer로 전송
+			offset += e.target.result.byteLength; // 전송하는 객체의 바이트 수
 			sendProgress.value = offset;
-			if (offset < file.size) {
+			if (offset < file.size) { // 보낸 파일 값이 파일 전체 크기보다 작을 때
 				readSlice(offset);
 			}
 		});
@@ -123,6 +234,18 @@
 		readSlice(0);
 	}
 	
+	chat.onkeypress = function(e) {
+		if (e.keyCode != 13) return;
+		dc.send(chat.value); // 데이터 송수신 함수
+		log("<p style='margin: 5px; float: right; background: #ffe100;'>" + chat.value + "</p><br>");
+		chat.value = "";
+	};
+
+	
+	dc.onopen = function() { // 연결 및 데이터 요청(연결 성공했을 때, connected 됐을 때)
+		chat.select();
+	} 
+	
 	function IsJsonString(str) { // json 타입인지 구분하는 함수
 		  try {
 		    var json = JSON.parse(str);
@@ -132,145 +255,22 @@
 		  }
 	}
 	
-	signalingWebsocket.onmessage = function(msg) {
-	    console.log("Got message", msg.data);
-	    
-	    var arr;
-	    var signal
-		if(typeof msg.data == 'string') {
-			if(IsJsonString(msg.data)) {
-				signal = JSON.parse(msg.data);				
-
-				switch (signal.type) {
-			        case "offer":
-			            handleOffer(signal);
-			            break;
-			        case "answer":
-			            handleAnswer(signal);
-			            break;
-			        // In local network, ICE candidates might not be generated.
-			        case "candidate":
-			            handleCandidate(signal);
-			            break;
-			        default:
-			            break;
-			    }
-				
-				if('filesize' in signal) {
-					fname = signal.filename;
-					fsize = signal.filesize;
-				}
-				//console.log("type:"+signal.type + ", data : "+msg.data);
-				
-				//fname = arr.filename;
-				//fsize = arr.filesize;
-			} else {
-				log("<p style='margin: 5px; float: left; background: #d4d4d4;'>" + msg.data + "</p><br>"); // JSON 타입 아닐 경우에는 일반 채팅이므로 채팅 log 출력
-			}
-		}
-	    
-	    console.log(typeof msg.data);
-	    if(typeof msg.data == 'object') {
-			receiveBuffer.push(msg.data);
-			receivedSize += msg.data.byteLength;
-			receiveProgress.value = receivedSize;
-			
-			if(receivedSize == fsize) {
-				const received = new Blob(receiveBuffer); // Blob : 대용량 바이너리 객체. 대체로 이미지나 사운드 파일 같은 하나의 커다란 파일
-				
-				var url = URL.createObjectURL(received); // Blob 객체를 나타내는 URL을 포함한 DOMString 생성. 생성된 window의 document에서만 유효.
-				var txt = "&lt;" + fname + "&gt; " +fsize + "(bytes)";
-				
-				log("<p style='margin: 5px; float: left; background: #d4d4d4;'><a href='"+url+"' download='"+fname+"' style='display: block;'>"+txt+"</a></p><br>");
-				receiveBuffer = [];
-				receivedSize = 0;
-			}
-		}
-	};
-	 
-	signalingWebsocket.onopen = init();
-	 
-	function sendSignal(signal) {
-	    if (signalingWebsocket.readyState == 1) {
-	        signalingWebsocket.send(JSON.stringify(signal));
-	    }
-	};
-
-	function init() {
-	    console.log("Connected to signaling endpoint. Now initializing.");    
-	    preparePeerConnection();
-	};
-	 
-	function preparePeerConnection() {
-	     // Using free public google STUN server.
-	    const config = {iceServers: [{urls: "stun:stun.1.google.com:19302"}]};
-	 
-	    // Prepare peer connection object
-	    pc = new RTCPeerConnection(config);
-	    pc.onnegotiationneeded = async () => {
-	        console.log('onnegotiationneeded');
-	        sendOfferSignal();
-	    };
-	    pc.onicecandidate = function(event) {
-	        if (event.candidate) {
-	        	sendSignal(event);
-	        }
-	    };
-	};
-	 
-	function sendOfferSignal() {
-	    pc.createOffer(function(offer) {
-	        sendSignal(offer);
-	        pc.setLocalDescription(offer);
-	    }, function(error) {
-	        alert("Error creating an offer");
-	    });
-	};
-	 
-	function handleOffer(offer) {
-	    pc.setRemoteDescription(new RTCSessionDescription(offer));
-	 
-	    // create and send an answer to an offer
-	    pc.createAnswer(function(answer) {
-	        pc.setLocalDescription(answer);
-	        sendSignal(answer);
-	    }, function(error) {
-	        alert("Error creating an answer");
-	    });
-	 
-	};
-	 
-	function handleAnswer(answer) {
-	    pc.setRemoteDescription(new RTCSessionDescription(answer));
-	    console.log("connection established successfully!!");
-	};
-	
-	function handleCandidate(candidate) {
-		alert("handleCandidate");
-	    pc.addIceCandidate(new RTCIceCandidate(candidate));
-	};
-	
-	const dc = pc.createDataChannel("chat", { negotiated: true, id: 0 }); // 원격 유저와 연결하는 신규 채널 생성 (채널이름, 설정 옵션)
-	const log = function(msg) {
-		div.innerHTML += "<br>"+msg;
-	}
-	
-	
 	dc.onmessage = function(e) { // 요청 데이터 받아와 사용
 		console.log(e);
+		
 		var arr;
-		if(typeof e.data == 'string') {
-			if(IsJsonString(e.data)) {
+		if(typeof e.data == 'string') { // 일반 채팅 및 파일이름과 크기 받을 때
+			if(IsJsonString(e.data)) { // 파일 기본 정보
 				arr = JSON.parse(e.data);				
 
 				fname = arr.filename;
 				fsize = arr.filesize;
-			} else {
-				log("<p style='margin: 5px; float: left; background: #d4d4d4;'>" + e.data + "</p><br>"); // JSON 타입 아닐 경우에는 일반 채팅이므로 채팅 log 출력
+			} else { // 일반 채팅
+				log("<p style='margin: 5px; float: left; background: #d4d4d4;'>${username}" + e.data + "</p><br>"); // JSON 타입 아닐 경우에는 일반 채팅이므로 채팅 log 출력
 			}
 		}
 		
-		if(typeof e.data == 'object') {
+		if(typeof e.data == 'object') { // 파일 받을 때
 			receiveBuffer.push(e.data);
 			receivedSize += e.data.byteLength;
 			receiveProgress.value = receivedSize;
@@ -286,19 +286,7 @@
 				receivedSize = 0;
 			}
 		}
-		
-	} 
-	
-	pc.oniceconnectionstatechange = function(e) { // 연결 상태
-		log(pc.iceConnectionState);
-	} 
-	
-	chat.onkeypress = function(e) {
-		if (e.keyCode != 13) return;
-		signalingWebsocket.send(chat.value); // 데이터 송수신 함수
-		log("<p style='margin: 5px; float: right; background: #ffe100;'>" + chat.value + "</p><br>");
-		chat.value = "";
-	};
+	}
 	</script>
  
 </body>
